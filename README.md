@@ -1,6 +1,6 @@
 # MapleDomains
 
-AI-assisted `.ca` domain finder for Canadian businesses. Built on TanStack Start, deployed on Cloudflare Workers.
+AI-assisted `.ca` domain finder for Canadian businesses. Built on TanStack Start, deployed on Netlify.
 
 Live at [mapledomains.xyz](https://mapledomains.xyz).
 
@@ -11,7 +11,7 @@ Live at [mapledomains.xyz](https://mapledomains.xyz).
 - **Groq** (Llama 3.3 70B) for AI domain generation — free tier
 - **CIRA RDAP** for live `.ca` availability checks
 - **Porkbun pricing API** for live registration prices
-- **Cloudflare Workers** runtime
+- **Netlify Functions** for SSR + server-side API calls
 
 ## Local development
 
@@ -23,43 +23,27 @@ npm run dev
 
 Visit http://localhost:5173.
 
-## Deploy to Cloudflare (one-time setup)
+## Deploy to Netlify
 
-### 1. Push your code to GitHub *(already done)*
+### 1. Push to GitHub *(already done)*
 
-### 2. Connect repo to Cloudflare
+### 2. Connect Netlify to the repo
 
-1. Go to [dash.cloudflare.com](https://dash.cloudflare.com) → sign up if needed (free)
-2. Sidebar → **Workers & Pages** → **Create** → **Workers** tab → **Import a repository**
-3. Authorize GitHub, pick `Hudsonlatimer/Maple-Domains`
-4. Build settings:
-   - **Build command:** `npm run build`
-   - **Deploy command:** `npx wrangler deploy --config dist/server/wrangler.json`
-5. **Variables and Secrets** → add:
-   - `GROQ_API_KEY` = your Groq key (mark as Secret)
+1. [app.netlify.com](https://app.netlify.com) → **Add new site** → **Import an existing project**
+2. Connect to GitHub → pick **`Hudsonlatimer/Maple-Domains`**
+3. Build settings (auto-detected from `netlify.toml`, no need to override):
+   - Build command: `npm run build`
+   - Publish directory: `dist/client`
+   - Functions directory: `netlify/functions`
+4. **Environment variables** (Site settings → Environment variables → **Add a variable**):
+   - `GROQ_API_KEY` = your Groq key
    - `GROQ_MODEL` = `llama-3.3-70b-versatile`
-6. **Create and deploy** — first build takes ~2 min
+5. **Deploy site**
 
-### 3. Connect your custom domain
+### 3. Custom domain
 
-1. In your Worker → **Settings** → **Domains & Routes** → **Add Custom Domain**
-2. Enter `mapledomains.xyz`
-3. Cloudflare will tell you to update DNS — easiest path: **change your nameservers at Namecheap to Cloudflare's** (Cloudflare will provide the two nameservers). After that, Cloudflare manages DNS automatically and the site goes live within ~5 minutes.
+Site settings → **Domains** → **Add a domain** → `mapledomains.xyz`. DNS at Namecheap is already pointed at Netlify, so it just verifies and provisions HTTPS automatically.
 
-## Subsequent deploys
+### How it works
 
-Just push to `main`. Cloudflare will rebuild and redeploy automatically.
-
-```bash
-git add -A
-git commit -m "..."
-git push
-```
-
-## Manual deploy (without Git)
-
-```bash
-npm run deploy
-```
-
-Requires `wrangler login` first.
+`netlify.toml` directs every request to `netlify/functions/server.mjs`, which imports the TanStack Start SSR handler from `dist/server/server.js` and forwards the request. Static client assets are served directly from `dist/client/`. The `[[redirects]]` block uses `force = false` so Netlify serves static files first and only invokes the function when no static match exists.

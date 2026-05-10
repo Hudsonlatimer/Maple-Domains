@@ -1,0 +1,16 @@
+[build]
+  command = "npm run build"
+  publish = "dist/client"
+  functions = "netlify/functions"
+
+[functions]
+  node_bundler = "esbuild"
+  # Bundle the SSR build output with the function so it can resolve at runtime
+  included_files = ["dist/server/**"]
+
+# Send every request that doesn't match a static file to the SSR function.
+[[redirects]]
+  from = "/*"
+  to = "/.netlify/functions/server"
+  status = 200
+  force = false
