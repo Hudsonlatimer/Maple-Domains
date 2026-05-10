@@ -1,53 +1,65 @@
 # MapleDomains
 
-AI-assisted `.ca` domain finder for Canadian businesses. Combines an LLM naming strategist with live RDAP availability checks to surface domains that are both available and semantically relevant.
+AI-assisted `.ca` domain finder for Canadian businesses. Built on TanStack Start, deployed on Cloudflare Workers.
+
+Live at [mapledomains.xyz](https://mapledomains.xyz).
 
 ## Stack
 
 - **TanStack Start** (React 19, file-based routing, server functions)
-- **Tailwind CSS v4** + shadcn/ui components
-- **Zod** for input validation
-- **Cloudflare Workers** ready (via `@cloudflare/vite-plugin` + `wrangler`)
-- **RDAP** (`rdap.org`) for authoritative domain availability lookups
-- **Groq** (free tier, Llama 3.3 70B) for AI-generated names — fast, no credit card
-- **Built-in heuristic fallback** so the page never errors if Groq is rate-limited or down (curated dictionary of Canadian regions, IATA codes, province tags, category-specific keyword cores)
-- **RDAP** (`rdap.org`) for free, official domain availability lookups
+- **Tailwind CSS v4** + shadcn/ui
+- **Groq** (Llama 3.3 70B) for AI domain generation — free tier
+- **CIRA RDAP** for live `.ca` availability checks
+- **Porkbun pricing API** for live registration prices
+- **Cloudflare Workers** runtime
 
 ## Local development
 
 ```bash
-bun install      # or npm / pnpm install
-bun run dev
+npm install
+cp .env.example .env   # add your free Groq key from https://console.groq.com/keys
+npm run dev
 ```
 
-Add your free Groq key to a `.env` file:
+Visit http://localhost:5173.
+
+## Deploy to Cloudflare (one-time setup)
+
+### 1. Push your code to GitHub *(already done)*
+
+### 2. Connect repo to Cloudflare
+
+1. Go to [dash.cloudflare.com](https://dash.cloudflare.com) → sign up if needed (free)
+2. Sidebar → **Workers & Pages** → **Create** → **Workers** tab → **Import a repository**
+3. Authorize GitHub, pick `Hudsonlatimer/Maple-Domains`
+4. Build settings:
+   - **Build command:** `npm run build`
+   - **Deploy command:** `npx wrangler deploy --config dist/server/wrangler.json`
+5. **Variables and Secrets** → add:
+   - `GROQ_API_KEY` = your Groq key (mark as Secret)
+   - `GROQ_MODEL` = `llama-3.3-70b-versatile`
+6. **Create and deploy** — first build takes ~2 min
+
+### 3. Connect your custom domain
+
+1. In your Worker → **Settings** → **Domains & Routes** → **Add Custom Domain**
+2. Enter `mapledomains.xyz`
+3. Cloudflare will tell you to update DNS — easiest path: **change your nameservers at Namecheap to Cloudflare's** (Cloudflare will provide the two nameservers). After that, Cloudflare manages DNS automatically and the site goes live within ~5 minutes.
+
+## Subsequent deploys
+
+Just push to `main`. Cloudflare will rebuild and redeploy automatically.
 
 ```bash
-# .env
-GROQ_API_KEY=gsk_...
-GROQ_MODEL=llama-3.3-70b-versatile
+git add -A
+git commit -m "..."
+git push
 ```
 
-If Groq is rate-limited, down, or the key is missing, the heuristic engine takes over so the page never errors.
-
-## Build
+## Manual deploy (without Git)
 
 ```bash
-bun run build
-bun run preview
+npm run deploy
 ```
 
-## Deploy (Cloudflare Workers)
-
-```bash
-bunx wrangler deploy
-```
-
-Set secrets with `wrangler secret put OPENAI_API_KEY`.
-
-## How it works
-
-1. User submits business category + region + optional seed keywords.
-2. Server function calls the LLM with a Canadian-naming-strategist system prompt and asks for JSON-shaped candidates.
-3. Each candidate is run through RDAP for live availability status (registered date, registrar).
-4. Results are sorted by availability, then by estimated Canadian search demand.
+Requires `wrangler login` first.
