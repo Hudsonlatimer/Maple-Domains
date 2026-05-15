@@ -367,6 +367,46 @@ async function checkAvailability(domain: string): Promise<RdapResult> {
 }
 
 // ---------------------------------------------------------------------------
+// Single-domain quick check
+// ---------------------------------------------------------------------------
+
+const CheckInput = z.object({
+  domain: z
+    .string()
+    .min(3)
+    .max(63)
+    .transform((v) => {
+      let d = v.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "");
+      if (!d.includes(".")) d = `${d}.ca`;
+      return d;
+    })
+    .refine((v) => /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z]{2,})$/.test(v), {
+      message: "Enter a valid domain (e.g. mystore.ca)",
+    }),
+});
+
+export type QuickCheckResult = {
+  domain: string;
+  available: boolean | null;
+  registrar?: string;
+  creationDate?: number;
+  error?: string;
+  price: PorkbunPrice | null;
+};
+
+export const checkDomain = createServerFn({ method: "POST" })
+  .inputValidator((d: unknown) => CheckInput.parse(d))
+  .handler(async ({ data, context }): Promise<QuickCheckResult> => {
+    const ip =
+      (context as { request?: Request })?.request?.headers?.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+    if (!checkRateLimit(ip)) {
+      throw new Error("Too many requests — please wait a moment and try again.");
+    }
+    const [rdap, price] = await Promise.all([checkAvailability(data.domain), getPorkbunCaPrice()]);
+    return { domain: data.domain, ...rdap, price };
+  });
+
+// ---------------------------------------------------------------------------
 // Main server function
 // ---------------------------------------------------------------------------
 

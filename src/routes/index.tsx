@@ -2,7 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useMutation } from "@tanstack/react-query";
 import { useState, useEffect } from "react";
-import { searchDomains, type DomainSuggestion, type PorkbunPrice } from "@/lib/domains.functions";
+import { searchDomains, checkDomain, type DomainSuggestion, type PorkbunPrice, type QuickCheckResult } from "@/lib/domains.functions";
 import { OTHER_REGISTRARS, porkbunRegisterUrl, formatUSD } from "@/lib/pricing";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -104,6 +104,7 @@ function demandLabel(score: number): { label: string; color: string } {
 
 function Index() {
   const search = useServerFn(searchDomains);
+  const quickCheck = useServerFn(checkDomain);
 
   // Persist form state across searches
   const [category, setCategory] = useState(() => {
@@ -118,6 +119,22 @@ function Index() {
     if (typeof window === "undefined") return "";
     try { return JSON.parse(localStorage.getItem(FORM_STORAGE_KEY) ?? "{}").keywords ?? ""; } catch { return ""; }
   });
+
+  const [quickInput, setQuickInput] = useState("");
+  const [quickResult, setQuickResult] = useState<QuickCheckResult | null>(null);
+
+  const quickMutation = useMutation({
+    mutationFn: () => quickCheck({ data: { domain: quickInput } }),
+    onSuccess: (data) => setQuickResult(data),
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const onQuickSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!quickInput.trim()) return;
+    setQuickResult(null);
+    quickMutation.mutate();
+  };
 
   const [results, setResults] = useState<DomainSuggestion[]>([]);
   const [price, setPrice] = useState<PorkbunPrice | null>(null);
@@ -294,6 +311,37 @@ function Index() {
               </div>
             </div>
           )}
+        </section>
+
+        {/* Quick availability check */}
+        <section className="max-w-4xl mx-auto px-6 pb-12">
+          <div className="bg-card border border-border rounded-xl p-6">
+            <h2 className="text-base font-semibold mb-1">Already have a name in mind?</h2>
+            <p className="text-sm text-muted-foreground mb-4">
+              Type any domain to check if it&rsquo;s available — no AI needed.
+            </p>
+            <form onSubmit={onQuickSubmit} className="flex gap-2">
+              <Input
+                placeholder="mystore.ca"
+                value={quickInput}
+                onChange={(e) => setQuickInput(e.target.value)}
+                className="h-10 flex-1 font-mono text-sm"
+                autoComplete="off"
+                spellCheck={false}
+              />
+              <Button type="submit" disabled={quickMutation.isPending} className="h-10 px-5 shrink-0">
+                {quickMutation.isPending ? <Spinner /> : "Check"}
+              </Button>
+            </form>
+
+            {quickResult && (
+              <QuickResult
+                result={quickResult}
+                isSaved={saved.includes(quickResult.domain)}
+                onToggleSave={() => toggleSaved(quickResult.domain)}
+              />
+            )}
+          </div>
         </section>
 
         {/* Saved domains */}
@@ -518,6 +566,70 @@ function ResultCard({
               {k}
             </span>
           ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function QuickResult({
+  result,
+  isSaved,
+  onToggleSave,
+}: {
+  result: QuickCheckResult;
+  isSaved: boolean;
+  onToggleSave: () => void;
+}) {
+  const status = result.available === true ? "available" : result.available === false ? "taken" : "unknown";
+  return (
+    <div className="mt-4 pt-4 border-t border-border">
+      <div className="flex items-center gap-3 flex-wrap">
+        <a
+          href={`https://${result.domain}`}
+          target="_blank"
+          rel="noreferrer"
+          className="text-lg font-semibold font-mono hover:text-primary transition-colors"
+        >
+          {result.domain}
+        </a>
+        <StatusBadge status={status} />
+        <button
+          type="button"
+          onClick={onToggleSave}
+          aria-label={isSaved ? `Remove ${result.domain} from saved` : `Save ${result.domain}`}
+          className="ml-auto text-muted-foreground hover:text-foreground transition-colors"
+        >
+          {isSaved ? <BookmarkCheck className="w-4 h-4 text-primary" /> : <Bookmark className="w-4 h-4" />}
+        </button>
+      </div>
+
+      {result.available === false && result.registrar && (
+        <p className="mt-1.5 text-xs text-muted-foreground">
+          Registered with <span className="text-foreground/80">{result.registrar}</span>
+          {result.creationDate ? ` since ${new Date(result.creationDate * 1000).getFullYear()}` : ""}
+        </p>
+      )}
+
+      {result.available === true && (
+        <div className="mt-3 flex items-center gap-3 flex-wrap">
+          {result.price ? (
+            <span className="text-sm text-muted-foreground">
+              From{" "}
+              <span className="text-foreground font-semibold tabular-nums">
+                {formatUSD(result.price.registration)}
+              </span>{" "}
+              USD/yr · Porkbun
+            </span>
+          ) : null}
+          <a
+            href={porkbunRegisterUrl(result.domain)}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1 text-sm font-medium px-3 py-1.5 rounded-md bg-foreground text-background hover:opacity-90 transition-opacity"
+          >
+            Register ↗
+          </a>
         </div>
       )}
     </div>
