@@ -1,5 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
+import Anthropic from "@anthropic-ai/sdk";
 
 const SearchInput = z.object({
   category: z.string().min(2).max(120),
@@ -34,7 +35,27 @@ type AiCandidate = {
 };
 
 // ---------------------------------------------------------------------------
-// Canadian-flavoured naming dictionary used by the free, no-key generator.
+// Rate limiting — simple in-memory token bucket per server instance
+// ---------------------------------------------------------------------------
+
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const RATE_LIMIT_MAX = 20;
+const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
+
+function checkRateLimit(ip: string): boolean {
+  const now = Date.now();
+  const entry = rateLimitMap.get(ip);
+  if (!entry || now > entry.resetAt) {
+    rateLimitMap.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+    return true;
+  }
+  if (entry.count >= RATE_LIMIT_MAX) return false;
+  entry.count++;
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// Canadian-flavoured naming dictionary used by the fallback generator.
 // ---------------------------------------------------------------------------
 
 const REGION_ALIASES: Record<string, { short: string[]; demand: number }> = {
@@ -111,6 +132,10 @@ function slugify(s: string) {
   return s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]+/g, "");
 }
 
+function escapeRegExp(s: string) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function detectCategoryKey(category: string): keyof typeof CATEGORY_KEYWORDS | null {
   const c = category.toLowerCase();
   for (const k of Object.keys(CATEGORY_KEYWORDS) as Array<keyof typeof CATEGORY_KEYWORDS>) {
@@ -138,7 +163,7 @@ function regionDemand(region: string): { tokens: string[]; demand: number } {
     }
   }
   for (const [prov, tags] of Object.entries(PROVINCE_TAGS)) {
-    if (r.includes(prov) || tags.some((t) => new RegExp(`\\b${t}\\b`).test(r))) {
+    if (r.includes(prov) || tags.some((t) => new RegExp(`\\b${escapeRegExp(t)}\\b`).test(r))) {
       tokens.push(...tags);
       demand = Math.max(demand, 50);
     }
@@ -175,62 +200,41 @@ function heuristicFallback(input: z.infer<typeof SearchInput>): AiCandidate[] {
     out.push({ domain, rationale, keywords: kwSeed.slice(0, 3), demandScore: score });
   };
 
-  // Pattern A: region + category core (highest semantic fit)
   for (const r of regionTokens) {
     for (const w of catWords) {
-      push(
-        [r, w],
-        `Combines ${input.region || "Canadian"} locality with the core "${w}" service term — strong local SEO match.`,
-        [`${r} ${w}`, `${w} ${r}`],
-        15,
-      );
+      push([r, w], `Combines ${input.region || "Canadian"} locality with the core "${w}" service term — strong local SEO match.`, [`${r} ${w}`, `${w} ${r}`], 15);
     }
   }
-
-  // Pattern B: region + commerce verb (brandable)
   for (const r of regionTokens) {
     for (const v of COMMERCE_VERBS.slice(0, 4)) {
       push([r, catWords[0] || cat, v], `Brandable triple: locality + service + "${v}".`, [`${r} ${cat}`], 5);
     }
   }
-
-  // Pattern C: northern flavour + category (national reach)
   for (const flav of NORTHERN_FLAVOUR.slice(0, 6)) {
     for (const w of catWords.slice(0, 2)) {
-      push(
-        [flav, w],
-        `National-feel name pairing the Canadian descriptor "${flav}" with "${w}".`,
-        [`${flav} ${w}`],
-        -5,
-      );
+      push([flav, w], `National-feel name pairing the Canadian descriptor "${flav}" with "${w}".`, [`${flav} ${w}`], -5);
     }
   }
-
-  // Pattern D: seed keyword combos
   for (const s of seeds) {
     for (const r of regionTokens.slice(0, 2)) push([r, s], `Targets your seed keyword "${s}" in ${r}.`, [`${r} ${s}`], 8);
     for (const v of COMMERCE_VERBS.slice(0, 2)) push([s, v], `Seed "${s}" + "${v}" — short, memorable.`, [s], 0);
   }
-
-  // Pattern E: pure category brandables (fallback when no region)
   for (const w of catWords) {
     for (const v of COMMERCE_VERBS) {
       push([w, v], `Compact brandable for the ${input.category} category.`, [w, `${w} ${v}`], -10);
     }
   }
 
-  // Shuffle a bit by demand variance, then sort by score desc, take top N+spare
   out.sort((a, b) => b.demandScore - a.demandScore);
   return out.slice(0, Math.max(input.count, 8));
 }
 
 // ---------------------------------------------------------------------------
-// Groq LLM (free tier). Heuristic generator above is only used as an emergency
-// fallback if the Groq call fails (rate limit, network, bad key).
+// Claude Haiku — domain naming via Anthropic API
 // ---------------------------------------------------------------------------
 
 function buildPrompt(input: z.infer<typeof SearchInput>) {
-  const system = `You are a Canadian domain naming strategist. Generate creative, brandable .ca domain names for businesses targeting the Canadian market. Combine local geographic cues (cities, provinces, regional slang like "GTA", "YYC", "Maritime") with high-intent service keywords. Avoid hyphens and numbers. Keep names 6-22 characters before the .ca. Output JSON only.`;
+  const system = `You are a Canadian domain naming strategist. Generate creative, brandable .ca domain names for businesses targeting the Canadian market. Combine local geographic cues (cities, provinces, regional slang like "GTA", "YYC", "Maritime") with high-intent service keywords. Avoid hyphens and numbers. Keep names 6-22 characters before the .ca. Output JSON only — no prose, no markdown fences.`;
 
   const user = `Business category: ${input.category}
 Region / city focus: ${input.region || "All of Canada"}
@@ -243,7 +247,6 @@ Return strict JSON: {"candidates":[{"domain":"halifaxheat.ca","rationale":"...",
 }
 
 function parseAiJson(content: string): AiCandidate[] {
-  // Models sometimes wrap JSON in code fences or add prose. Extract the first {...} block.
   let text = content.trim();
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
   if (fenced) text = fenced[1].trim();
@@ -267,47 +270,38 @@ function parseAiJson(content: string): AiCandidate[] {
   }
 }
 
-async function callGroq(input: z.infer<typeof SearchInput>): Promise<AiCandidate[]> {
-  const key = process.env.GROQ_API_KEY;
-  if (!key) throw new Error("GROQ_API_KEY missing");
-  const model = process.env.GROQ_MODEL ?? "llama-3.3-70b-versatile";
-  const { system, user } = buildPrompt(input);
+async function callClaude(input: z.infer<typeof SearchInput>): Promise<AiCandidate[]> {
+  const key = process.env.ANTHROPIC_API_KEY;
+  if (!key) throw new Error("ANTHROPIC_API_KEY missing");
 
-  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-    body: JSON.stringify({
-      model,
-      messages: [
-        { role: "system", content: system },
-        { role: "user", content: user },
-      ],
-      response_format: { type: "json_object" },
-      temperature: 0.9,
-    }),
+  const { system, user } = buildPrompt(input);
+  const client = new Anthropic({ apiKey: key });
+
+  const msg = await client.messages.create({
+    model: "claude-haiku-4-5-20251001",
+    max_tokens: 1024,
+    system,
+    messages: [{ role: "user", content: user }],
   });
 
-  if (!res.ok) {
-    const text = await res.text();
-    if (res.status === 401) throw new Error("Groq auth failed — check GROQ_API_KEY.");
-    if (res.status === 429) throw new Error("Groq rate limit — try again in a moment.");
-    throw new Error(`Groq ${res.status}: ${text.slice(0, 200)}`);
-  }
-
-  const data = await res.json();
-  return parseAiJson(data?.choices?.[0]?.message?.content ?? "");
+  const text = msg.content?.[0]?.type === "text" ? msg.content[0].text : "";
+  return parseAiJson(text);
 }
 
 async function brainstorm(input: z.infer<typeof SearchInput>): Promise<AiCandidate[]> {
   try {
-    const list = await callGroq(input);
+    const list = await callClaude(input);
     if (list.length > 0) return list;
-    console.warn("Groq returned 0 valid candidates — falling back to heuristic.");
+    console.warn("Claude returned 0 valid candidates — falling back to heuristic.");
   } catch (e) {
-    console.warn("Groq call failed, using heuristic:", e instanceof Error ? e.message : e);
+    console.warn("Claude call failed, using heuristic:", e instanceof Error ? e.message : e);
   }
   return heuristicFallback(input);
 }
+
+// ---------------------------------------------------------------------------
+// RDAP availability checking
+// ---------------------------------------------------------------------------
 
 const RDAP_HEADERS = {
   Accept: "application/rdap+json",
@@ -343,7 +337,10 @@ function parseRdapBody(data: unknown): RdapResult {
 
 async function tryRdap(url: string): Promise<RdapResult | { kind: "miss" | "skip" }> {
   try {
-    const res = await fetch(url, { headers: RDAP_HEADERS });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    const res = await fetch(url, { headers: RDAP_HEADERS, signal: controller.signal });
+    clearTimeout(timer);
     if (res.status === 404) return { available: true };
     if (res.status === 403 || res.status === 429 || res.status >= 500) return { kind: "skip" };
     if (!res.ok) return { available: null, error: `RDAP ${res.status}` };
@@ -354,8 +351,6 @@ async function tryRdap(url: string): Promise<RdapResult | { kind: "miss" | "skip
 }
 
 async function checkAvailability(domain: string): Promise<RdapResult> {
-  // For .ca, hit CIRA directly (authoritative). Fall back to rdap.org bootstrap.
-  // CIRA's official RDAP server (per IANA bootstrap registry).
   const endpoints = domain.endsWith(".ca")
     ? [
         `https://rdap.ca.fury.ca/rdap/domain/${encodeURIComponent(domain)}`,
@@ -371,9 +366,20 @@ async function checkAvailability(domain: string): Promise<RdapResult> {
   return { available: null, error: "All RDAP endpoints unreachable" };
 }
 
+// ---------------------------------------------------------------------------
+// Main server function
+// ---------------------------------------------------------------------------
+
 export const searchDomains = createServerFn({ method: "POST" })
   .inputValidator((d: unknown) => SearchInput.parse(d))
-  .handler(async ({ data }): Promise<{ results: DomainSuggestion[]; price: PorkbunPrice | null }> => {
+  .handler(async ({ data, context }): Promise<{ results: DomainSuggestion[]; price: PorkbunPrice | null }> => {
+    // Basic rate limiting using request IP
+    const ip =
+      (context as { request?: Request })?.request?.headers?.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+    if (!checkRateLimit(ip)) {
+      throw new Error("Too many requests — please wait a moment and try again.");
+    }
+
     const [candidates, price] = await Promise.all([brainstorm(data), getPorkbunCaPrice()]);
     const enriched = await Promise.all(
       candidates.slice(0, data.count).map(async (c) => ({
@@ -390,13 +396,20 @@ export const searchDomains = createServerFn({ method: "POST" })
     return { results: enriched, price };
   });
 
+// ---------------------------------------------------------------------------
+// Porkbun pricing (1-hour cache)
+// ---------------------------------------------------------------------------
+
 let cachedPrice: PorkbunPrice | null = null;
 const PRICE_TTL_MS = 60 * 60 * 1000;
 
 async function getPorkbunCaPrice(): Promise<PorkbunPrice | null> {
   if (cachedPrice && Date.now() - cachedPrice.fetchedAt < PRICE_TTL_MS) return cachedPrice;
   try {
-    const res = await fetch("https://api.porkbun.com/api/json/v3/pricing/get");
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    const res = await fetch("https://api.porkbun.com/api/json/v3/pricing/get", { signal: controller.signal });
+    clearTimeout(timer);
     if (!res.ok) return cachedPrice;
     const data = (await res.json()) as { pricing?: Record<string, { registration?: string; renewal?: string }> };
     const ca = data.pricing?.ca;

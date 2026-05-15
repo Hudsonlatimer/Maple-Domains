@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useMutation } from "@tanstack/react-query";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { searchDomains, type DomainSuggestion, type PorkbunPrice } from "@/lib/domains.functions";
 import { OTHER_REGISTRARS, porkbunRegisterUrl, formatUSD } from "@/lib/pricing";
 import { Button } from "@/components/ui/button";
@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
 import { Toaster } from "@/components/ui/sonner";
+import { Bookmark, BookmarkCheck } from "lucide-react";
 
 const STRUCTURED_DATA = {
   "@context": "https://schema.org",
@@ -28,6 +29,11 @@ const STRUCTURED_DATA = {
       audience: {
         "@type": "Audience",
         geographicArea: { "@type": "Country", name: "Canada" },
+      },
+      potentialAction: {
+        "@type": "SearchAction",
+        target: "https://mapledomains.xyz/?q={search_term_string}",
+        "query-input": "required name=search_term_string",
       },
     },
     {
@@ -80,6 +86,9 @@ export const Route = createFileRoute("/")({
   }),
 });
 
+const FORM_STORAGE_KEY = "mapledomains-form";
+const SAVED_STORAGE_KEY = "mapledomains-saved";
+
 const examples = [
   { category: "HVAC contractor", region: "Halifax, NS" },
   { category: "Artisan bakery", region: "Montréal, QC" },
@@ -87,13 +96,51 @@ const examples = [
   { category: "Indigenous tourism", region: "Yukon" },
 ];
 
+function demandLabel(score: number): { label: string; color: string } {
+  if (score >= 80) return { label: "High demand", color: "text-success" };
+  if (score >= 55) return { label: "Moderate demand", color: "text-warning" };
+  return { label: "Niche demand", color: "text-muted-foreground" };
+}
+
 function Index() {
   const search = useServerFn(searchDomains);
-  const [category, setCategory] = useState("");
-  const [region, setRegion] = useState("");
-  const [keywords, setKeywords] = useState("");
+
+  // Persist form state across searches
+  const [category, setCategory] = useState(() => {
+    if (typeof window === "undefined") return "";
+    try { return JSON.parse(localStorage.getItem(FORM_STORAGE_KEY) ?? "{}").category ?? ""; } catch { return ""; }
+  });
+  const [region, setRegion] = useState(() => {
+    if (typeof window === "undefined") return "";
+    try { return JSON.parse(localStorage.getItem(FORM_STORAGE_KEY) ?? "{}").region ?? ""; } catch { return ""; }
+  });
+  const [keywords, setKeywords] = useState(() => {
+    if (typeof window === "undefined") return "";
+    try { return JSON.parse(localStorage.getItem(FORM_STORAGE_KEY) ?? "{}").keywords ?? ""; } catch { return ""; }
+  });
+
   const [results, setResults] = useState<DomainSuggestion[]>([]);
   const [price, setPrice] = useState<PorkbunPrice | null>(null);
+  const [saved, setSaved] = useState<string[]>(() => {
+    if (typeof window === "undefined") return [];
+    try { return JSON.parse(localStorage.getItem(SAVED_STORAGE_KEY) ?? "[]"); } catch { return []; }
+  });
+
+  // Keep form synced to localStorage
+  useEffect(() => {
+    try { localStorage.setItem(FORM_STORAGE_KEY, JSON.stringify({ category, region, keywords })); } catch {}
+  }, [category, region, keywords]);
+
+  // Keep saved synced to localStorage
+  useEffect(() => {
+    try { localStorage.setItem(SAVED_STORAGE_KEY, JSON.stringify(saved)); } catch {}
+  }, [saved]);
+
+  const toggleSaved = (domain: string) => {
+    setSaved((prev) =>
+      prev.includes(domain) ? prev.filter((d) => d !== domain) : [...prev, domain],
+    );
+  };
 
   const mutation = useMutation({
     mutationFn: () => search({ data: { category, region, keywords, count: 10 } }),
@@ -129,6 +176,12 @@ function Index() {
             </span>
           </a>
           <nav className="flex items-center gap-6 text-sm text-muted-foreground">
+            {saved.length > 0 && (
+              <a href="#saved" className="flex items-center gap-1.5 hover:text-foreground transition-colors">
+                <BookmarkCheck className="w-3.5 h-3.5" />
+                {saved.length} saved
+              </a>
+            )}
             <a href="#how" className="hover:text-foreground transition-colors">How it works</a>
             <a href="#faq" className="hover:text-foreground transition-colors">FAQ</a>
           </nav>
@@ -230,12 +283,62 @@ function Index() {
               <ResultsHeader results={results} price={price} />
               <div className="space-y-3">
                 {results.map((r) => (
-                  <ResultCard key={r.domain} r={r} price={price} />
+                  <ResultCard
+                    key={r.domain}
+                    r={r}
+                    price={price}
+                    isSaved={saved.includes(r.domain)}
+                    onToggleSave={() => toggleSaved(r.domain)}
+                  />
                 ))}
               </div>
             </div>
           )}
         </section>
+
+        {/* Saved domains */}
+        {saved.length > 0 && (
+          <section id="saved" className="border-t border-border bg-card">
+            <div className="max-w-4xl mx-auto px-6 py-12">
+              <div className="flex items-center justify-between mb-6">
+                <h2 className="text-xl font-semibold tracking-tight">Saved domains</h2>
+                <button
+                  type="button"
+                  onClick={() => setSaved([])}
+                  className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  Clear all
+                </button>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {saved.map((domain) => (
+                  <div
+                    key={domain}
+                    className="flex items-center gap-2 px-3 py-1.5 rounded-full border border-border bg-background text-sm"
+                  >
+                    <span>{domain}</span>
+                    <a
+                      href={porkbunRegisterUrl(domain)}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-primary text-xs hover:underline"
+                    >
+                      Register ↗
+                    </a>
+                    <button
+                      type="button"
+                      onClick={() => toggleSaved(domain)}
+                      className="text-muted-foreground hover:text-foreground ml-1"
+                      aria-label={`Remove ${domain} from saved`}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </section>
+        )}
 
         {/* How it works */}
         <section id="how" className="border-t border-border bg-card">
@@ -249,8 +352,8 @@ function Index() {
               />
               <Step
                 num="2"
-                title="We generate names"
-                body="An AI naming strategist combines your details with Canadian geographic cues to brainstorm 10 brandable .ca domains."
+                title="AI generates names"
+                body="Claude combines your details with Canadian geographic cues to brainstorm 10 brandable .ca domains."
               />
               <Step
                 num="3"
@@ -272,23 +375,24 @@ function Index() {
                 doesn&rsquo;t take a cut.
               </Faq>
               <Faq q="What does the demand score mean?">
-                A 1–100 estimate of Canadian search volume and commercial intent for the
-                underlying keywords. Use it to compare suggestions side-by-side.
+                A 1–100 estimate of Canadian search volume and commercial intent.{" "}
+                <strong>80+</strong> is high demand, <strong>55–79</strong> is moderate,{" "}
+                <strong>below 55</strong> is niche. Higher demand means more competition too —
+                balance it with availability.
               </Faq>
               <Faq q="Why does one say 'Unknown'?">
-                The registry returned a status we couldn&rsquo;t interpret — usually a transient
-                rate limit. Run the search again and it almost always resolves.
+                The CIRA registry temporarily couldn&rsquo;t be reached (usually a rate limit on
+                their end). Run the search again and it almost always resolves. It does{" "}
+                <em>not</em> mean the domain is taken.
               </Faq>
               <Faq q="Do you store my searches?">
-                No. There&rsquo;s no database, no analytics, no account. Queries hit the AI and the
-                registry, then disappear.
+                No. There&rsquo;s no database, no analytics, no account. Queries hit the AI and
+                the registry, then disappear. Saved domains stay in your browser only.
               </Faq>
               <Faq q="Where does the price come from?">
                 The headline price is fetched live from Porkbun&rsquo;s public pricing API on
-                every search (cached for an hour). Other registrars (Cloudflare, Namecheap, Hover,
-                GoDaddy) don&rsquo;t expose prices programmatically and aggressively block
-                automated checks, so we link out instead — click through to see their current
-                rate. No affiliate links.
+                every search (cached for an hour). Other registrars link out — click through to see
+                their current rate. No affiliate links.
               </Faq>
             </div>
           </div>
@@ -338,10 +442,21 @@ function ResultsHeader({
   );
 }
 
-function ResultCard({ r, price }: { r: DomainSuggestion; price: PorkbunPrice | null }) {
+function ResultCard({
+  r,
+  price,
+  isSaved,
+  onToggleSave,
+}: {
+  r: DomainSuggestion;
+  price: PorkbunPrice | null;
+  isSaved: boolean;
+  onToggleSave: () => void;
+}) {
   const status =
     r.available === true ? "available" : r.available === false ? "taken" : "unknown";
   const showPricing = r.available === true;
+  const { label: dLabel, color: dColor } = demandLabel(r.demandScore);
 
   return (
     <div className="bg-card border border-border rounded-xl p-5 hover:border-foreground/20 transition-colors">
@@ -371,9 +486,23 @@ function ResultCard({ r, price }: { r: DomainSuggestion; price: PorkbunPrice | n
           )}
         </div>
 
-        <div className="text-right shrink-0">
-          <div className="text-2xl font-semibold tabular-nums">{r.demandScore}</div>
-          <div className="text-xs text-muted-foreground">demand</div>
+        <div className="flex items-start gap-3 shrink-0">
+          <div className="text-right">
+            <div className="text-2xl font-semibold tabular-nums">{r.demandScore}</div>
+            <div className={`text-xs ${dColor}`}>{dLabel}</div>
+          </div>
+          <button
+            type="button"
+            onClick={onToggleSave}
+            aria-label={isSaved ? `Remove ${r.domain} from saved` : `Save ${r.domain}`}
+            className="mt-1 text-muted-foreground hover:text-foreground transition-colors"
+          >
+            {isSaved ? (
+              <BookmarkCheck className="w-4 h-4 text-primary" />
+            ) : (
+              <Bookmark className="w-4 h-4" />
+            )}
+          </button>
         </div>
       </div>
 
@@ -451,8 +580,8 @@ function PricingRow({ domain, price }: { domain: string; price: PorkbunPrice | n
             </a>
           ))}
           <p className="col-span-full text-[11px] text-muted-foreground/70 mt-1">
-            Live price shown for Porkbun (their public API). Other registrars don&rsquo;t expose
-            prices programmatically — click through to see the current rate. Not affiliate links.
+            Live price shown for Porkbun only. Other registrars don&rsquo;t expose prices
+            programmatically — click through to see the current rate. Not affiliate links.
           </p>
         </div>
       )}
@@ -466,9 +595,12 @@ function StatusBadge({ status }: { status: "available" | "taken" | "unknown" }) 
     taken: "bg-secondary text-muted-foreground border-border",
     unknown: "bg-warning/10 text-warning border-warning/20",
   }[status];
-  const label = { available: "Available", taken: "Taken", unknown: "Unknown" }[status];
+  const label = { available: "Available", taken: "Taken", unknown: "Unknown — retry" }[status];
+  const title = status === "unknown" ? "Registry temporarily unreachable. Re-run the search to check again." : undefined;
   return (
-    <span className={`text-xs font-medium px-2 py-0.5 rounded-md border ${styles}`}>{label}</span>
+    <span title={title} className={`text-xs font-medium px-2 py-0.5 rounded-md border cursor-default ${styles}`}>
+      {label}
+    </span>
   );
 }
 
